@@ -1,0 +1,92 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ms-websocket-ingress
+  namespace: ambulance-system
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/websocket-services: "ms-websocket-service"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - ws.ambulance.com
+    secretName: ms-websocket-tls
+  rules:
+  - host: ws.ambulance.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ms-websocket-service
+            port:
+              number: 80
+
+---
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ms-websocket-cert
+  namespace: ambulance-system
+spec:
+  secretName: ms-websocket-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - ws.ambulance.com
+
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ms-websocket-network-policy
+  namespace: ambulance-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ms-websocket
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ambulance-system
+    - podSelector:
+        matchLabels:
+          app: nginx-ingress
+    ports:
+    - protocol: TCP
+      port: 3000
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: ambulance-system
+    ports:
+    - protocol: TCP
+      port: 6379  # Redis
+    - protocol: TCP
+      port: 9000  # MS Despacho
+    - protocol: TCP
+      port: 8003  # MS Auth
+    - protocol: TCP
+      port: 8002  # MS Decision
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 53   # DNS
+    - protocol: UDP
+      port: 53   # DNS

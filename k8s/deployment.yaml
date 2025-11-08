@@ -1,0 +1,221 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ms-websocket
+  namespace: ambulance-system
+  labels:
+    app: ms-websocket
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ms-websocket
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ms-websocket
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: ms-websocket
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+
+      containers:
+      - name: ms-websocket
+        image: registry.example.com/ms-websocket:latest
+        imagePullPolicy: IfNotPresent
+
+        ports:
+        - name: websocket
+          containerPort: 3000
+          protocol: TCP
+
+        env:
+        # Application
+        - name: NODE_ENV
+          value: "production"
+        - name: APP_NAME
+          value: "MS-WebSocket"
+        - name: APP_PORT
+          value: "3000"
+        - name: APP_HOST
+          value: "0.0.0.0"
+
+        # Logging
+        - name: LOG_LEVEL
+          value: "info"
+        - name: LOG_FORMAT
+          value: "json"
+
+        # Redis
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: ms-websocket-config
+              key: redis_host
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ms-websocket-secret
+              key: redis_password
+              optional: true
+
+        # JWT
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ms-websocket-secret
+              key: jwt_secret
+        - name: JWT_EXPIRATION
+          value: "24h"
+
+        # CORS
+        - name: CORS_ORIGIN
+          valueFrom:
+            configMapKeyRef:
+              name: ms-websocket-config
+              key: cors_origin
+
+        # Microservices URLs
+        - name: MS_AUTH_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ms-websocket-config
+              key: ms_auth_url
+        - name: MS_DESPACHO_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ms-websocket-config
+              key: ms_despacho_url
+        - name: MS_DECISION_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ms-websocket-config
+              key: ms_decision_url
+
+        # GraphQL
+        - name: GRAPHQL_ENABLED
+          value: "true"
+        - name: GRAPHQL_ENDPOINT
+          value: "/graphql"
+        - name: GRAPHQL_PLAYGROUND
+          value: "false"
+
+        # Health Check
+        - name: HEALTH_CHECK_ENABLED
+          value: "true"
+        - name: HEALTH_CHECK_INTERVAL
+          value: "30000"
+
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: websocket
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: websocket
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 2
+
+        startupProbe:
+          httpGet:
+            path: /health
+            port: websocket
+            scheme: HTTP
+          initialDelaySeconds: 0
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 30
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1001
+          capabilities:
+            drop:
+              - ALL
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ms-websocket
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 30
+      restartPolicy: Always
+      dnsPolicy: ClusterFirst
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ms-websocket
+  namespace: ambulance-system
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ms-websocket-config
+  namespace: ambulance-system
+data:
+  redis_host: "redis.ambulance-system.svc.cluster.local"
+  cors_origin: "http://localhost:3000,http://localhost:3001,http://dashboard.ambulance.com"
+  ms_auth_url: "http://ms-auth-service.ambulance-system.svc.cluster.local"
+  ms_despacho_url: "http://ms-despacho-service.ambulance-system.svc.cluster.local"
+  ms_decision_url: "http://ms-decision-service.ambulance-system.svc.cluster.local"
+
+---
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ms-websocket-secret
+  namespace: ambulance-system
+type: Opaque
+data:
+  # base64 encoded - CHANGE IN PRODUCTION
+  jwt_secret: eW91ci1zdXBlci1zZWNyZXQtand0LWtleS1jaGFuZ2UtaW4tcHJvZHVjdGlvbg==
+  redis_password: ""
