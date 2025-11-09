@@ -3,7 +3,7 @@
  * Redis client setup for caching, pub/sub, and sessions
  */
 
-import { createClient } from 'redis';
+import Redis from 'ioredis';
 import { logger } from './logger.js';
 
 const redisConfig = {
@@ -28,19 +28,17 @@ const redisConfig = {
 /**
  * Create and configure Redis client
  */
-export const redisClient = createClient({
+export const redisClient = new Redis({
   host: redisConfig.host,
   port: redisConfig.port,
   db: redisConfig.db,
   password: redisConfig.password,
-  socket: {
-    reconnectStrategy: (retries) => {
-      if (retries > 10) {
-        logger.error('Max Redis reconnection attempts exceeded');
-        return new Error('Redis reconnection failed');
-      }
-      return Math.min(retries * 50, 500);
+  retryStrategy: (times) => {
+    if (times > 10) {
+      logger.error('Max Redis reconnection attempts exceeded');
+      return null;
     }
+    return Math.min(times * 50, 500);
   }
 });
 
@@ -68,7 +66,8 @@ redisClient.on('reconnecting', () => {
  */
 export async function connectRedis() {
   try {
-    await redisClient.connect();
+    // ioredis connects automatically, but we ensure it's ready
+    await redisClient.ping();
     logger.info('Redis connected successfully');
   } catch (error) {
     logger.error({ error }, 'Failed to connect to Redis');

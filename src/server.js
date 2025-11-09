@@ -18,7 +18,7 @@ dotenv.config();
 
 // Import application modules
 import { logger } from './config/logger.js';
-import { redisClient } from './config/redis.js';
+import { redisClient, connectRedis } from './config/redis.js';
 import { AuthService } from './services/AuthService.js';
 import { DispatchService } from './services/DispatchService.js';
 import { ConnectionService } from './services/ConnectionService.js';
@@ -131,16 +131,18 @@ app.get('/status', (req, res) => {
 const apolloServer = new ApolloServer({
   schema: createGraphQLSchema(io, redisClient),
   introspection: process.env.NODE_ENV !== 'production',
-  plugins: {
-    didResolveOperation({ operationName }) {
-      logger.info({ operationName }, 'GraphQL operation');
-    },
-    willSendResponse({ errors }) {
-      if (errors) {
-        logger.error({ errors }, 'GraphQL errors');
+  plugins: [
+    {
+      async didResolveOperation({ operationName }) {
+        logger.info({ operationName }, 'GraphQL operation');
+      },
+      async willSendResponse({ errors }) {
+        if (errors) {
+          logger.error({ errors }, 'GraphQL errors');
+        }
       }
     }
-  }
+  ]
 });
 
 // Start Apollo Server
@@ -275,37 +277,52 @@ io.on('connection', async (socket) => {
 });
 
 /**
+ * Redis Connection Setup
+ */
+
+try {
+  await connectRedis();
+} catch (error) {
+  logger.warn({ error }, 'Redis connection failed, continuing without Redis');
+}
+
+/**
  * Redis Pub/Sub Setup - Listen for events from other microservices
  */
 
-const redisSub = redisClient.duplicate();
-await redisSub.connect();
+try {
+  const redisSub = redisClient.duplicate();
 
-// Subscribe to dispatch events
-redisSub.subscribe('despachos', (message, channel) => {
-  try {
-    const event = JSON.parse(message);
-    logger.info({ event, channel }, 'Redis event received');
+  // Subscribe to dispatch events
+  redisSub.subscribe('despachos', (message, channel) => {
+    try {
+      const event = JSON.parse(message);
+      logger.info({ event, channel }, 'Redis event received');
 
-    // Broadcast to connected clients
-    io.emit('dispatch:event', event);
-  } catch (error) {
-    logger.error({ error, message }, 'Error processing Redis message');
-  }
-});
+      // Broadcast to connected clients
+      io.emit('dispatch:event', event);
+    } catch (error) {
+      logger.error({ error, message }, 'Error processing Redis message');
+    }
+  });
 
-// Subscribe to ambulancia location updates
-redisSub.subscribe('ambulancias', (message, channel) => {
-  try {
-    const event = JSON.parse(message);
-    logger.info({ event, channel }, 'Ambulancia event received');
+  // Subscribe to ambulancia location updates
+  redisSub.subscribe('ambulancias', (message, channel) => {
+    try {
+      const event = JSON.parse(message);
+      logger.info({ event, channel }, 'Ambulancia event received');
 
-    // Broadcast location updates
-    io.to(`dispatch:${event.despacho_id}`).emit('ambulancia:location-updated', event);
-  } catch (error) {
-    logger.error({ error, message }, 'Error processing ambulancia message');
-  }
-});
+      // Broadcast location updates
+      io.to(`dispatch:${event.despacho_id}`).emit('ambulancia:location-updated', event);
+    } catch (error) {
+      logger.error({ error, message }, 'Error processing ambulancia message');
+    }
+  });
+
+  logger.info('Redis Pub/Sub subscriptions initialized');
+} catch (error) {
+  logger.warn({ error }, 'Redis Pub/Sub initialization failed, continuing without subscriptions');
+}
 
 /**
  * Graceful Shutdown Handler
@@ -340,7 +357,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
  * Start Server
  */
 
-const PORT = process.env.APP_PORT || 3000;
+const PORT = process.env.APP_PORT || 3001;
 const HOST = process.env.APP_HOST || '0.0.0.0';
 
 httpServer.listen(PORT, HOST, () => {

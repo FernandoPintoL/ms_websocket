@@ -1,4 +1,5 @@
-import { gql } from 'apollo-server-express';
+import { gql } from 'graphql-tag';
+import { makeExecutableSchema } from '@graphql-tools/schema';
 
 /**
  * GraphQL Schema for MS WebSocket
@@ -544,4 +545,22 @@ export const createResolvers = (services) => {
       }
     }
   };
+};
+
+/**
+ * Create GraphQL Schema
+ * Combines type definitions and resolvers into a complete schema
+ */
+export const createGraphQLSchema = (io, redisClient) => {
+  // Create resolvers with services
+  const resolvers = createResolvers({
+    io,
+    redisClient
+  });
+
+  // Build executable schema
+  return makeExecutableSchema({
+    typeDefs,
+    resolvers
+  });
 };
