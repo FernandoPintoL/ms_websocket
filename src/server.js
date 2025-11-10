@@ -318,6 +318,24 @@ try {
       logger.error({ error, message }, 'Error processing ambulancia message');
     }
   });
+  // Subscribe to personal events
+  redisSub.subscribe('personal', (message, channel) => {
+    try {
+      const event = JSON.parse(message);
+      logger.info({ event, channel }, 'Personal event received');
+
+      // Broadcast to connected clients based on broadcast_as
+      if (event.broadcast_as === 'personal.creado') {
+        io.emit('personal_created', event);
+      } else if (event.broadcast_as === 'personal.actualizado') {
+        io.emit('personal_updated', event);
+      } else if (event.broadcast_as === 'personal.estado.cambiado') {
+        io.emit('personal_status_changed', event);
+      }
+    } catch (error) {
+      logger.error({ error, message }, 'Error processing personal message');
+    }
+  });
 
   logger.info('Redis Pub/Sub subscriptions initialized');
 } catch (error) {
