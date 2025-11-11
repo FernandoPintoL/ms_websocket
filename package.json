@@ -11,6 +11,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "generate-cert": "node scripts/generate-cert.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "lint": "eslint src/",

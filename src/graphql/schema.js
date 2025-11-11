@@ -1,11 +1,20 @@
 import { gql } from 'graphql-tag';
 import { makeExecutableSchema } from '@graphql-tools/schema';
+import { buildSubgraphSchema } from '@apollo/subgraph';
+import { entityResolvers } from './resolvers/entityResolvers.js';
 
 /**
  * GraphQL Schema for MS WebSocket
+ * Apollo Federation v2 Subgraph
  * Includes Queries, Mutations, and Subscriptions for real-time dispatch management
  */
 export const typeDefs = gql`
+  # ============================================
+  # APOLLO FEDERATION v2
+  # ============================================
+  extend schema
+    @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key"])
+
   # ============================================
   # SCALAR TYPES
   # ============================================
@@ -44,7 +53,7 @@ export const typeDefs = gql`
   # TYPES
   # ============================================
 
-  type User {
+  type User @key(fields: "id") {
     id: ID!
     nombre: String!
     email: String!
@@ -54,13 +63,13 @@ export const typeDefs = gql`
     createdAt: DateTime!
   }
 
-  type Dispatch {
+  type Dispatch @key(fields: "id") {
     id: ID!
     numero: String!
     estado: DispatchStatusEnum!
     paciente: String
     ubicacion: Location!
-    ambulanciaId: String
+    ambulanciaId: ID
     ambulanciaPlaca: String
     driverName: String
     notas: String
@@ -77,7 +86,7 @@ export const typeDefs = gql`
     accuracyMeters: Float
   }
 
-  type Rastreo {
+  type Rastreo @key(fields: "id") {
     id: ID!
     despachoId: ID!
     ubicacion: Location!
@@ -85,7 +94,7 @@ export const typeDefs = gql`
     timestamp: DateTime!
   }
 
-  type Ambulancia {
+  type Ambulancia @key(fields: "id") {
     id: ID!
     placa: String!
     estado: String!
@@ -549,7 +558,7 @@ export const createResolvers = (services) => {
 
 /**
  * Create GraphQL Schema
- * Combines type definitions and resolvers into a complete schema
+ * Combines type definitions and resolvers into a complete federation subgraph schema
  */
 export const createGraphQLSchema = (io, redisClient) => {
   // Create resolvers with services
@@ -558,9 +567,26 @@ export const createGraphQLSchema = (io, redisClient) => {
     redisClient
   });
 
-  // Build executable schema
-  return makeExecutableSchema({
-    typeDefs,
-    resolvers
-  });
+  // Merge entity resolvers for federation
+  const allResolvers = {
+    ...resolvers,
+    ...entityResolvers
+  };
+
+  // Build federation subgraph schema directly
+  try {
+    return buildSubgraphSchema([
+      {
+        typeDefs,
+        resolvers: allResolvers
+      }
+    ]);
+  } catch (error) {
+    console.error('Error building subgraph schema:', error);
+    // Fallback to regular schema if federation fails
+    return makeExecutableSchema({
+      typeDefs,
+      resolvers: allResolvers
+    });
+  }
 };

@@ -149,6 +149,28 @@
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
+    // HACK CRÍTICO: Interceptar WebSocket para forzar ws:// incluso si Socket.IO intenta wss://
+    // Esto es necesario porque Socket.IO.js tiene lógica interna que puede forzar WSS
+    const OriginalWebSocket = window.WebSocket;
+    window.WebSocket = function(url, protocols) {
+        console.log('🔌 WebSocket interceptado - URL original:', url);
+
+        // Si Socket.IO intenta wss://, convertir a ws://
+        if (url && url.startsWith('wss://')) {
+            const wsUrl = url.replace('wss://', 'ws://');
+            console.log('✅ Convertido wss:// a ws://:', wsUrl);
+            return new OriginalWebSocket(wsUrl, protocols);
+        }
+
+        console.log('✅ WebSocket normal:', url);
+        return new OriginalWebSocket(url, protocols);
+    };
+    // Copiar propiedades estáticas
+    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
+    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
+    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
+
     let socket = null;
     let currentUserId = null;
     let currentServerUrl = 'http://localhost:4004';
@@ -195,50 +217,65 @@
         console.log(`🔌 Conectando a: ${serverUrl}`);
         addMessage(`🔌 Intentando conectar a: ${serverUrl}`, 'info');
 
-        // Validar y asegurar que se usa http (no https)
+        // Normalizar URL: extraer HOST:PUERTO
         let normalizedUrl = serverUrl.trim();
 
-        // Quitar http:// o https:// si existen
+        // Quitar protocolo si existe
         if (normalizedUrl.startsWith('https://')) {
             normalizedUrl = normalizedUrl.replace('https://', '');
-            console.warn('⚠️ HTTPS detectado, convirtiendo a HTTP para desarrollo');
-            addMessage('⚠️ Nota: Se cambió HTTPS a HTTP (required para ws://)', 'warning');
         } else if (normalizedUrl.startsWith('http://')) {
             normalizedUrl = normalizedUrl.replace('http://', '');
         }
 
-        // Asegurar que siempre usamos http:// (nunca https://)
+        // CRÍTICO: Usar http:// para forzar ws:// (NUNCA https://)
         const fullUrl = 'http://' + normalizedUrl;
 
         console.log(`✅ URL final para Socket.IO: ${fullUrl}`);
-        addMessage(`✅ Conectando a: ${fullUrl}`, 'info');
 
-        // Detectar si es localhost o IP
-        const isLocalhost = fullUrl.includes('localhost') || fullUrl.includes('127.0.0.1');
+        // Detectar si usar wss:// o ws:// basado en el protocolo actual de la página
+        let socketUrl = fullUrl;
+        if (window.location.protocol === 'https:') {
+          // Si la página está en HTTPS, convertir a wss://
+          socketUrl = fullUrl.replace(/^https?:/, 'wss:').replace(/^http:/, 'wss:');
+          addMessage(`✅ Conectando a: ${socketUrl} (WSS - conexión segura)`, 'info');
+        } else {
+          // Si está en HTTP, usar ws://
+          socketUrl = fullUrl.replace(/^https?:/, 'ws:').replace(/^https:/, 'ws:');
+          addMessage(`✅ Conectando a: ${socketUrl} (WS - sin SSL)`, 'info');
+        }
 
-        // Para IP local, solo usar ws:// (no permitir wss://)
+        // CONFIGURACIÓN CRÍTICA para Socket.IO v4: Forzar WS, no WSS
         const socketOptions = {
+            // TRANSPORTE: Intentar WebSocket primero, luego polling como fallback
+            // Esto permite debuggear si el problema es WebSocket específicamente
             transports: ['websocket', 'polling'],
-            upgrade: false,  // NO permitir upgrade a WSS
+
+            // NO permitir upgrade
+            upgrade: false,
+
+            // Reconexión
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             reconnectionAttempts: 10,
-            forceBase64: false,
-            enablesXDR: false,
-            rejectUnauthorized: false,
-            extraHeaders: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
+
+            // Forzar protocolo
+            rememberUpgrade: false
         };
 
-        // Si es IP local, forzar ws:// sin SSL
-        if (!isLocalhost && !fullUrl.includes('https')) {
-            socketOptions.secure = false;
-            socketOptions.disableAutoConnect = false;
-        }
+        console.log('🔧 Socket.IO options:', socketOptions);
+        console.log('✅ FORZANDO: transports=[websocket], secure=false, NO upgrade');
 
-        socket = io(fullUrl, socketOptions);
+        // CREAR SOCKET CON URL HTTP EXPLÍCITA (esto es crucial)
+        // Asegurar que NO se use HTTPS en la URL
+        console.log('🔍 Verificación pre-conexión:');
+        console.log('  - fullUrl:', fullUrl);
+        console.log('  - Protocolo detectado:', fullUrl.startsWith('https://') ? 'HTTPS' : 'HTTP');
+        console.log('  - Socket.IO transports:', socketOptions.transports);
+        console.log('  - Socket.IO secure:', socketOptions.secure);
+
+        console.log('  - URL final para Socket.IO:', socketUrl);
+        socket = io(socketUrl, socketOptions);
 
         socket.on('connect', () => {
             updateStatus('Conectado', 'connected');

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test WebSocket Puro (Sin Socket.IO)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        #messages {
+            height: 300px;
+            overflow-y: auto;
+            background: white;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<h1>🔌 Test WebSocket Puro (Sin Socket.IO)</h1>
+
+<div class="container">
+    <h3>Conexión WebSocket Directa</h3>
+    <label for="wsUrl"><strong>URL WebSocket:</strong></label>
+    <input type="text" id="wsUrl" placeholder="ws://192.168.1.38:4004" value="ws://localhost:4004" style="width: 300px;">
+    <button onclick="connectWS()">Conectar WS</button>
+    <button onclick="disconnectWS()">Desconectar</button>
+</div>
+
+<div class="container">
+    <h3>Estado</h3>
+    <div id="status" class="status disconnected">Desconectado</div>
+    <p><strong>Protocolo:</strong> <span id="protocol">-</span></p>
+    <p><strong>Estado ReadyState:</strong> <span id="readyState">-</span></p>
+</div>
+
+<div class="container">
+    <h3>Enviar Mensaje</h3>
+    <input type="text" id="message" placeholder="Mensaje" value="Hola desde WebSocket puro">
+    <button onclick="sendMsg()">Enviar</button>
+</div>
+
+<div class="container">
+    <h3>Mensajes</h3>
+    <div id="messages"></div>
+    <button onclick="clearMsg()">Limpiar</button>
+</div>
+
+<script>
+// INTERCEPTOR CRÍTICO: Ejecutar ANTES de cualquier cosa
+// El navegador está reescribiendo URLs a nivel del motor, no podemos interceptar eso
+// La solución es NO permitir que el navegador vea URLs con protocolo
+(function() {
+  console.log('🔥 Inicializando interceptor de WebSocket avanzado...');
+
+  const OriginalWS = window.WebSocket;
+  let interceptorActive = true;
+
+  // Crear proxy que intercepte el constructor
+  const WSProxy = new Proxy(OriginalWS, {
+    construct(target, args, newTarget) {
+      let [url, protocols] = args;
+      console.log('🔌 [PROXY] WebSocket constructor - URL original:', url);
+
+      // Convertir wss:// a ws:// si es necesario
+      if (url && typeof url === 'string') {
+        if (url.startsWith('wss://')) {
+          url = url.replace('wss://', 'ws://');
+          console.log('🔄 [PROXY] Convertida WSS a WS:', url);
+        }
+      }
+
+      try {
+        // Intentar crear con el protocolo modificado
+        const socket = Reflect.construct(target, [url, protocols], target);
+        console.log('✅ [PROXY] Socket creado exitosamente con:', url);
+        return socket;
+      } catch (e) {
+        console.error('❌ [PROXY] Error creando socket:', e);
+        throw e;
+      }
+    }
+  });
+
+  // Reemplazar el WebSocket global
+  window.WebSocket = WSProxy;
+
+  // Copiar propiedades estáticas
+  Object.defineProperty(window.WebSocket, 'CONNECTING', {
+    value: OriginalWS.CONNECTING,
+    enumerable: true,
+    configurable: true
+  });
+  Object.defineProperty(window.WebSocket, 'OPEN', {
+    value: OriginalWS.OPEN,
+    enumerable: true,
+    configurable: true
+  });
+  Object.defineProperty(window.WebSocket, 'CLOSING', {
+    value: OriginalWS.CLOSING,
+    enumerable: true,
+    configurable: true
+  });
+  Object.defineProperty(window.WebSocket, 'CLOSED', {
+    value: OriginalWS.CLOSED,
+    enumerable: true,
+    configurable: true
+  });
+
+  console.log('✅ [PROXY] Proxy de WebSocket inicializado correctamente');
+  console.log('   - CONNECTING:', window.WebSocket.CONNECTING);
+  console.log('   - OPEN:', window.WebSocket.OPEN);
+  console.log('   - CLOSING:', window.WebSocket.CLOSING);
+  console.log('   - CLOSED:', window.WebSocket.CLOSED);
+})();
+</script>
+
+<script>
+let ws = null;
+
+function addLog(msg, type = 'info') {
+    const div = document.getElementById('messages');
+    const time = new Date().toLocaleTimeString();
+    const log = document.createElement('div');
+
+    if (type === 'error') log.style.color = '#dc3545';
+    else if (type === 'success') log.style.color = '#28a745';
+    else if (type === 'sent') log.style.color = '#007bff';
+
+    log.textContent = `[${time}] ${msg}`;
+    div.appendChild(log);
+    div.scrollTop = div.scrollHeight;
+    console.log(msg);
+}
+
+function updateStatus(text, className) {
+    const status = document.getElementById('status');
+    status.textContent = text;
+    status.className = `status ${className}`;
+}
+
+function updateReadyState() {
+    if (!ws) {
+        document.getElementById('readyState').textContent = 'NULL';
+        return;
+    }
+    const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+    document.getElementById('readyState').textContent = `${states[ws.readyState]} (${ws.readyState})`;
+}
+
+function connectWS() {
+    const url = document.getElementById('wsUrl').value.trim();
+
+    if (!url) {
+        addLog('❌ Ingresa una URL válida', 'error');
+        return;
+    }
+
+    if (ws) {
+        ws.close();
+    }
+
+    addLog(`🔌 Intentando conectar a: ${url}`, 'info');
+
+    try {
+        // Asegurar que la URL sea ws:// (no wss://) para desarrollo
+        let wsUrl = url;
+        if (wsUrl.startsWith('http://')) {
+            wsUrl = wsUrl.replace('http://', 'ws://');
+            addLog(`✅ URL convertida a WebSocket: ${wsUrl}`, 'info');
+        } else if (wsUrl.startsWith('https://')) {
+            wsUrl = wsUrl.replace('https://', 'wss://');
+            addLog(`⚠️  URL convertida a WebSocket Seguro: ${wsUrl}`, 'info');
+        } else if (!wsUrl.startsWith('ws')) {
+            wsUrl = 'ws://' + wsUrl;
+            addLog(`✅ URL con protocolo ws:// añadido: ${wsUrl}`, 'info');
+        }
+
+        ws = new WebSocket(wsUrl);
+        updateReadyState();
+
+        ws.onopen = function() {
+            addLog('✅ CONECTADO al servidor WebSocket', 'success');
+            updateStatus('Conectado', 'connected');
+            document.getElementById('protocol').textContent = url.startsWith('wss://') ? 'WSS (Seguro)' : 'WS (Normal)';
+            updateReadyState();
+        };
+
+        ws.onmessage = function(event) {
+            addLog(`📨 Mensaje recibido: ${event.data}`, 'info');
+        };
+
+        ws.onerror = function(error) {
+            addLog(`❌ ERROR: ${error.message || error}`, 'error');
+            updateStatus('Error de Conexión', 'disconnected');
+            updateReadyState();
+        };
+
+        ws.onclose = function() {
+            addLog('❌ DESCONECTADO del servidor', 'error');
+            updateStatus('Desconectado', 'disconnected');
+            updateReadyState();
+            ws = null;
+        };
+
+    } catch (e) {
+        addLog(`❌ Excepción: ${e.message}`, 'error');
+        updateStatus('Error', 'disconnected');
+    }
+}
+
+function disconnectWS() {
+    if (ws) {
+        ws.close();
+        ws = null;
+        addLog('👋 Desconexión solicitada', 'info');
+    }
+}
+
+function sendMsg() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addLog('❌ No hay conexión WebSocket abierta', 'error');
+        return;
+    }
+
+    const msg = document.getElementById('message').value;
+    if (!msg) {
+        addLog('❌ Ingresa un mensaje', 'error');
+        return;
+    }
+
+    try {
+        ws.send(msg);
+        addLog(`📤 Enviado: ${msg}`, 'sent');
+    } catch (e) {
+        addLog(`❌ Error al enviar: ${e.message}`, 'error');
+    }
+}
+
+function clearMsg() {
+    document.getElementById('messages').innerHTML = '';
+}
+
+// Log inicial
+window.onload = function() {
+    addLog('🚀 Página cargada. Usa WebSocket PURO (sin Socket.IO) para descartar problemas de Socket.IO');
+    addLog('💡 Usa ws://HOST:PUERTO (NUNCA wss:// para desarrollo sin certificados)');
+};
+</script>
+</body>
+</html>

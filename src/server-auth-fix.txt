@@ -1,0 +1,17 @@
+BUSCAR:
+  if (!token) {
+      return next(new Error('Authentication error: Missing token'));
+    }
+
+REEMPLAZAR CON:
+  if (!token) {
+      // Allow anonymous connections in development
+      if (process.env.NODE_ENV !== 'production') {
+        logger.warn('Allowing connection without token in development mode');
+        socket.userId = 'anonymous';
+        socket.userRole = 'guest';
+        socket.userName = 'Guest User';
+        return next();
+      }
+      return next(new Error('Authentication error: Missing token'));
+    }
