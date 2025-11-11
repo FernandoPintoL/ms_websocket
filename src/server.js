@@ -43,7 +43,20 @@ const httpServer = createServer(app);
  */
 const io = new SocketServer(httpServer, {
   cors: {
-    origin: process.env.CORS_ORIGIN?.split(',') || '*',
+    origin: function(origin, callback) {
+      // En desarrollo, permitir cualquier origen
+      if (process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+      } else {
+        // En producción, validar orígenes específicos
+        const allowedOrigins = (process.env.CORS_ORIGIN || '*').split(',');
+        if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      }
+    },
     methods: ['GET', 'POST'],
     credentials: true,
     allowEIO3: true
@@ -51,7 +64,9 @@ const io = new SocketServer(httpServer, {
   transports: ['websocket', 'polling'],
   pingInterval: parseInt(process.env.WS_HEARTBEAT_INTERVAL || '30000'),
   pingTimeout: parseInt(process.env.WS_HEARTBEAT_TIMEOUT || '5000'),
-  maxHttpBufferSize: 1e6
+  maxHttpBufferSize: 1e6,
+  allowUpgrades: true,
+  perMessageDeflate: false  // Desabilitar compresión para desarrollo
 });
 
 /**
@@ -75,7 +90,22 @@ const metricsController = new MetricsController();
  */
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: process.env.NODE_ENV === 'production' ? true : {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.socket.io"],
+      scriptSrcAttr: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "ws://localhost:*", "ws://*:*", "wss://*:*", "http://localhost:*", "http://*:*", "https://*:*"],
+      frameSrc: ["'self'"],
+      objectSrc: ["'none'"]
+    }
+  },
+  crossOriginOpenerPolicy: false,  // Permitir desde cualquier origen para desarrollo
+  crossOriginEmbedderPolicy: false // Permitir recursos embebidos de cualquier origen
+}));
 
 // CORS middleware
 app.use(cors({
@@ -85,6 +115,16 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Custom security headers for development (allow IP-based WebSocket)
+app.use((req, res, next) => {
+  // Allow WebSocket from any IP in development
+  if (process.env.NODE_ENV !== 'production') {
+    res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  }
+  next();
+});
+
 // Logging middleware
 app.use(pinoHttp({ logger }));
 app.use(morgan(':method :url :status :response-time ms'));
@@ -92,6 +132,13 @@ app.use(morgan(':method :url :status :response-time ms'));
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// Serve static files (test dashboard)
+import { fileURLToPath } from 'url';
+import path from 'path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.use(express.static(path.join(__dirname, '..')));
 
 /**
  * REST API Routes
@@ -122,6 +169,31 @@ app.get('/status', (req, res) => {
     uptime: process.uptime(),
     connections: io.engine.clientsCount
   });
+});
+
+// Get list of connected clients
+app.get('/connections', (req, res) => {
+  try {
+    const sockets = io.sockets.sockets;
+    const clients = Array.from(sockets.values()).map(socket => ({
+      socketId: socket.id,
+      userId: socket.userId || 'anonymous',
+      userName: socket.userName || 'Anonymous User',
+      userRole: socket.userRole || 'guest',
+      connectedAt: socket.connectedAt || new Date().toISOString(),
+      clientIp: socket.handshake?.address || 'Unknown'
+    }));
+
+    res.json({
+      status: 'ok',
+      totalConnections: clients.length,
+      connections: clients,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error({ error }, 'Error getting connections');
+    res.status(500).json({ error: 'Could not get connections', details: error.message });
+  }
 });
 
 /**
@@ -187,6 +259,14 @@ io.use(async (socket, next) => {
     const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.split(' ')[1];
 
     if (!token) {
+      // Allow anonymous connections in development
+      if (process.env.NODE_ENV !== 'production') {
+        logger.warn('Allowing connection without token in development mode');
+        socket.userId = 'anonymous';
+        socket.userRole = 'guest';
+        socket.userName = 'Guest User';
+        return next();
+      }
       return next(new Error('Authentication error: Missing token'));
     }
 
@@ -216,16 +296,22 @@ io.use((socket, next) => {
 io.on('connection', async (socket) => {
   const connectionId = uuidv4();
   socket.connectionId = connectionId;
+  socket.connectedAt = new Date().toISOString();
 
   logger.info({
     socketId: socket.id,
     userId: socket.userId,
-    connectionId
+    connectionId,
+    connectedAt: socket.connectedAt
   }, 'User connected');
 
   try {
     // Record connection in Redis
-    await connectionService.recordConnection(socket);
+    try {
+      await connectionService.recordConnection(socket);
+    } catch (redisError) {
+      logger.warn({ redisError, socketId: socket.id }, 'Failed to record connection in Redis, continuing anyway');
+    }
 
     // Initialize Socket namespace controller
     const socketController = new SocketNamespaceController(
@@ -243,7 +329,8 @@ io.on('connection', async (socket) => {
 
   } catch (error) {
     logger.error({ error, socketId: socket.id }, 'Error during socket initialization');
-    socket.disconnect(true);
+    logger.warn({ socketId: socket.id }, 'Continuing despite socket initialization error');
+    // Don't disconnect - allow the socket to continue
   }
 
   /**
