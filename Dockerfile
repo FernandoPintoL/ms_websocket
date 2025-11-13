@@ -9,8 +9,8 @@ RUN apk add --no-cache python3 make g++
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
+# Install dependencies (using npm install to pick up latest changes)
+RUN npm install && \
     npm cache clean --force
 
 # Stage 2: Runtime
@@ -18,11 +18,11 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install runtime dependencies only
+# Install runtime dependencies
 RUN apk add --no-cache \
-    tini \
+    dumb-init \
     curl \
-    dumb-init
+    jq
 
 # Copy from builder
 COPY --from=builder /app/node_modules ./node_modules
@@ -32,25 +32,28 @@ COPY --from=builder /app/package*.json ./
 COPY src ./src
 COPY .env.example ./.env.example
 
-# Create non-root user
+# Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S nodejs -u 1001 && \
+    chown -R nodejs:nodejs /app
 
-# Set ownership
-RUN chown -R nodejs:nodejs /app
+# Create logs directory
+RUN mkdir -p /app/logs && \
+    chown -R nodejs:nodejs /app/logs
 
 # Switch to non-root user
 USER nodejs
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:${APP_PORT:-3000}/health || exit 1
+# Checks /health endpoint which doesn't require all services ready
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${APP_PORT:-4004}/health || exit 1
 
-# Expose port
-EXPOSE 3000
+# Expose port (4004 for WebSocket)
+EXPOSE 4004
 
-# Use dumb-init to handle signals properly
-ENTRYPOINT ["/sbin/dumb-init", "--"]
+# Use dumb-init to handle signals properly (SIGTERM, SIGINT)
+ENTRYPOINT ["dumb-init", "--"]
 
 # Start application
 CMD ["node", "src/server.js"]

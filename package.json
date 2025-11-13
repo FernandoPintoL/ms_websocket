@@ -46,6 +46,7 @@
     "morgan": "^1.10.0",
     "pino": "^8.17.0",
     "pino-http": "^8.6.0",
+    "pino-pretty": "^10.3.0",
     "socket.io": "^4.7.2",
     "socket.io-client": "^4.8.1",
     "socket.io-redis": "^6.1.1",
